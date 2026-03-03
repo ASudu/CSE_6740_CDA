@@ -24,7 +24,18 @@ def initialize_parameters(
     SIGMA = numpy.ndarray[numpy.ndarray[numpy.ndarray[float]]] - k x n x n
     PI = numpy.ndarray[float] - k x 1
     """
-    raise NotImplementedError()
+    # Mixing coefficients
+    PI = np.full((k, 1), 1 / k)
+
+    # Means
+    # As per docstring, we set it to a random pixel's value, without replacement
+    random_indices = np.random.choice(X.shape[0], size=k, replace=False)
+    MU = X[random_indices]
+
+    # Covariance matrices
+    SIGMA = compute_sigma(X, MU)
+
+    return MU, SIGMA, PI
 
 
 def compute_sigma(X: np.ndarray, MU: np.ndarray) -> np.ndarray:
@@ -38,7 +49,19 @@ def compute_sigma(X: np.ndarray, MU: np.ndarray) -> np.ndarray:
     returns:
     SIGMA = numpy.ndarray[numpy.ndarray[numpy.ndarray[float]]] - k x n x n
     """
-    raise NotImplementedError()
+    m,n = X.shape
+    k = MU.shape[0]
+
+    # Initialize SIGMA with zeros
+    SIGMA = np.zeros((k, n, n))
+    for i in range(k):
+        # Center the data around ith mean
+        centered = X - MU[i]
+
+        # Compute covariance matrix for the ith component
+        SIGMA[i] = (1 / m) * np.dot(centered.T, centered)
+    
+    return SIGMA
 
 
 def prob(x: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> Union[float, np.ndarray]:
@@ -57,8 +80,39 @@ def prob(x: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> Union[float, np.nd
     returns:
     probability = float or numpy.ndarray[float]
     """
+    
+    if x.ndim == 1:
+        x = x.reshape(1, -1)  # Convert to 2D array with shape (1, n)
+    elif x.ndim == 2 and x.shape[1] != mu.shape[0]:
+        raise ValueError("The number of features in x must match the length of mu.")
 
-    raise NotImplementedError()
+    num_samples, dim = x.shape
+
+    # Normalization constant
+    norm_const = 1.0 / (np.power(2 * np.pi, dim / 2) * np.sqrt(np.linalg.det(sigma)))
+
+    def single_sample_prob(x_i):
+        """
+        Calculate the probability of a single data point x_i under the multivariate normal distribution
+
+        Args:
+            x_i (np.ndarray): A single data point (row vector: 1 x n)
+
+        Returns:
+            float: The probability of x_i under the multivariate normal distribution
+        """
+        # Center the data point
+        centered = x_i - mu # shape: (1,n)
+
+        # Exponent term
+        exponent = -0.5 * np.dot(centered, np.linalg.solve(sigma, centered.T)) # shape: (1,1)
+
+        return norm_const * np.exp(exponent)
+
+    if num_samples == 1:
+        return single_sample_prob(x[0])
+    else:
+        return np.array([single_sample_prob(x_i) for x_i in x])
 
 
 def E_step(
@@ -80,8 +134,17 @@ def E_step(
     returns:
     responsibility = numpy.ndarray[numpy.ndarray[float]] - k x m
     """
-    raise NotImplementedError()
+    num_samples, _ = X.shape
+    resp = np.zeros((k, num_samples))  # shape: (k, m)
 
+    for i in range(k):
+        likelihoods = prob(X, MU[i], SIGMA[i])  # shape: (m,)
+        resp[i] = PI[i] * likelihoods  # shape: (m,)
+
+    # Normalize responsibilities
+    resp = resp / np.sum(resp, axis=0)
+
+    return resp
 
 def M_step(
     X: np.ndarray, r: np.ndarray, k: int
@@ -102,7 +165,21 @@ def M_step(
     new_SIGMA = numpy.ndarray[numpy.ndarray[numpy.ndarray[float]]] - k x n x n
     new_PI = numpy.ndarray[float] - k x 1
     """
-    raise NotImplementedError()
+
+    # New mixing coefficients
+    new_PI = np.mean(r, axis=1)  # shape: (k, 1)'
+
+    # New means
+    new_MU = (r @ X) / np.sum(r, axis=1, keepdims=True)  # shape: (k, n)
+
+    # New covariance matrices
+    new_SIGMA = np.zeros((k, X.shape[1], X.shape[1]))  # shape: (k, n, n)
+    for i in range(k):
+        centered = X - new_MU[i]  # shape: (m, n)
+        weighted_centered = r[i][:, np.newaxis] * centered  # shape: (m, n)
+        new_SIGMA[i] = (weighted_centered.T @ centered) / np.sum(r[i])  # shape: (n, n)
+    
+    return new_MU, new_SIGMA, new_PI
 
 
 def likelihood(
@@ -127,7 +204,16 @@ def likelihood(
     returns:
     log_likelihood = float
     """
-    raise NotImplementedError()
+    num_samples, _ = X.shape
+    log_likelihood = 0.0
+
+    for n in range(num_samples):
+        likelihood_n = 0.0
+        for i in range(k):
+            likelihood_n += PI[i] * prob(X[n], MU[i], SIGMA[i])
+        log_likelihood += np.log(likelihood_n)
+
+    return log_likelihood
 
 
 def default_convergence(prev_likelihood, new_likelihood, conv_ctr, conv_ctr_cap=10):
@@ -190,4 +276,32 @@ def train_model(
     new_PI = numpy.ndarray[float] - k x 1
     responsibility = numpy.ndarray[numpy.ndarray[float]] - k x m
     """
-    raise NotImplementedError()
+    # Initialize parameters
+    if initial_values is None:
+        MU, SIGMA, PI = initialize_parameters(X, k)
+    else:
+        MU, SIGMA, PI = initial_values
+
+    prev_likelihood = None
+    conv_ctr = 0
+
+    while True:
+        # E-step
+        responsibility = E_step(X, MU, SIGMA, PI, k)
+
+        # M-step
+        MU, SIGMA, PI = M_step(X, responsibility, k)
+
+        # Check for convergence
+        new_likelihood = likelihood(X, MU, SIGMA, PI, k)
+        print(f"Log Likelihood: {new_likelihood}")
+
+        if prev_likelihood is not None:
+            conv_ctr, converged = convergence_function(prev_likelihood, new_likelihood, conv_ctr)
+            if converged:
+                print("Convergence reached.")
+                break
+
+        prev_likelihood = new_likelihood
+
+    return MU, SIGMA, PI, responsibility
